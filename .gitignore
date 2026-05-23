@@ -1,0 +1,14 @@
+# compiled object files
+*.o
+
+# executable
+run_tests
+
+# IDE files (CLion specifically)
+.idea/
+cmake-build-debug/
+cmake-build-release/
+*.cmake
+CMakeFiles/
+CMakeCache.txt
+CMakeLists.txt
