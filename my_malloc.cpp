@@ -28,11 +28,9 @@
 static Block dummy = {0, nullptr, nullptr, true}; // dummy node
 static Block *free_list = &dummy; // head of the free list, head always points to dummy
 
-static void*  heap_start = sbrk(0);  // first byte of the managed heap
+static void*  heap_start;  // first byte of the managed heap
 static void*  heap_end   = nullptr;  // one-past the last managed byte
 // ─────────────────────────────────────────────────────────────────────────────
-
-// TODO: declare your global state here
 
 
 // =============================================================================
@@ -73,9 +71,19 @@ void remove_block_from_free_list(Block *blk) {
         blk->next->prev = blk->prev;
     }
 
+    // Delete all pointers
     blk->prev = nullptr;
     blk->next = nullptr;
+
+    // It is not free anymore
     blk->is_free = false;
+}
+
+void initializeBlockSize(Block* blk, size_t size) {
+    blk->size = size;
+
+    auto* footer = reinterpret_cast<size_t *>(reinterpret_cast<char *>(blk) + blk->size - sizeof(size_t));
+    *footer = blk->size;
 }
 
 //  Ask the OS for more memory with sbrk().
@@ -88,11 +96,12 @@ void extend_heap(size_t size) {
         heap_start = sbrk(0);  // set once on first call
     }
 
-    size_t memory_needed = (size > MIN_HEAP_CHUNK) ? size : MIN_HEAP_CHUNK + sizeof(Block);
+    const size_t memory_needed = (size > MIN_HEAP_CHUNK) ? size : MIN_HEAP_CHUNK;
 
     // Ask OS to extend the heap buy 4096 + 32 bytes
     void *raw = sbrk(memory_needed);
 
+    // The end of the heap is now the beginning of the new pointer + the memory requested
     heap_end = static_cast<char *>(raw) + memory_needed;
 
     // Cast the pointer to that memory as a Block. Now the first 32 bytes can be used for Block struct activities
@@ -100,16 +109,15 @@ void extend_heap(size_t size) {
     auto *new_block = static_cast<Block *>(raw);
 
     // Initialize the new block on the free list, wait to initialize next
-    new_block->size = memory_needed;
+    initializeBlockSize(new_block, memory_needed);
 
+    // We now have a new free block
     add_block_to_free_list(new_block);
 }
 
-// If blk is much larger than needed, carve off the excess and put he remainder back into the free list.
+// If blk is much larger than needed, carve off the excess and put the remainder back into the free list.
 // Only split if the remainder would be >= MIN_BLOCK_SIZE.
 // This function splits the block and appends the new block from the split to the front of the list
-
-
 Block *split_block(Block *current_block, const size_t memory_needed) {
     // Calculate the offset required for the split. This will be where the new block pointer starts
     long split_size_block = static_cast<long>(current_block->size) - static_cast<long>(memory_needed);
@@ -123,19 +131,17 @@ Block *split_block(Block *current_block, const size_t memory_needed) {
     auto *new_block = reinterpret_cast<Block *>(reinterpret_cast<char *>(current_block) + split_size_block);
 
     // Initialize new block
-    new_block->size = memory_needed;
-
+    initializeBlockSize(new_block, memory_needed);
     add_block_to_free_list(new_block);
 
     // Change size of block that was split
-    current_block->size = split_size_block;
+    initializeBlockSize(current_block, split_size_block);
 
     return new_block;
 }
 
 // Walk your free list and return the first (or best) block that is at least `needed` bytes in total size.
 // Return nullptr if no such block exists.
-
 Block *find_suitable_block(const size_t memory_needed) {
     // Summon the head of the free list
     Block *blk = free_list;
@@ -150,26 +156,52 @@ Block *find_suitable_block(const size_t memory_needed) {
     return nullptr;
 }
 
-
-//
-// void coalesce(Block* blk) {
-//     // If there is a block ahead to merge with
-//     if (blk->next != nullptr) {
-//         // Create new total
-//         size_t new_total = blk->prev.blk->size + blk->next->size;
-//         blk->size = new_total;
-//
-//
-//     }
-// }
 //      Merge blk with adjacent free neighbours to reduce fragmentation.
 //      Boundary-tag coalescing (storing the block size at the *end* of
 //      each block) lets you find the previous block in O(1); this is
 //      optional but earns the "coalescing" test.
-//
-// =============================================================================
+void coalesce(Block* blk) {
+    Block* base = blk;
+    size_t new_total = blk->size;
 
-// TODO: implement your helper functions here
+    // Calculate the size of the block behind the current one we are seeing in the heap, then step back that amount to call that block
+    size_t behind_size = *(reinterpret_cast<size_t*>(reinterpret_cast<char *>(blk) - sizeof(size_t)));
+    auto* behind = reinterpret_cast<Block *>(reinterpret_cast<char *>(blk) - behind_size);
+
+    // Call the block ahead in the heap using the current block's size
+    auto* ahead = reinterpret_cast<Block *>(reinterpret_cast<char *>(blk) + blk->size);
+
+    // If there is a block ahead to merge with
+    // 1. exists
+    // 2. Is a free block
+    // 3. Is not the end of the heap
+    if (ahead != nullptr && ahead->is_free == true && ahead != heap_end) {
+        // Add the space to the total
+        new_total += ahead->size;
+
+        // Remove the block ahead from the free list, it is now merged with the base block in front of it
+        remove_block_from_free_list(ahead);
+    }
+
+    // If there is a block behind to merge with
+    // 1. exists
+    // 2. Is a free block
+    // 3. Is not the start of the heap
+    if (behind != nullptr && behind->is_free == true) {
+        // add that behind total to the total new block size
+        new_total += behind->size;
+
+        /* For the sake of not overstepping the heap into memory we haven't allocated, the base is now the block behind
+        / the current one.*/
+        base = behind;
+
+        // The current block is now free, it is merged with the one behind it on the heap
+        remove_block_from_free_list(blk);
+    }
+
+    // Initialize the new block with the new merged total
+    initializeBlockSize(base,new_total);
+}
 
 
 // =============================================================================
@@ -190,9 +222,11 @@ Block *find_suitable_block(const size_t memory_needed) {
 void *my_malloc(size_t size) {
     // If the size of memory requested is more than 0, continue
     if (size != 0) {
+        // memory we need is size of the header (32 bytes) + the size requested + the size of the footer (8 bytes)
+        const size_t raw_memory_needed = sizeof(Block) + size + sizeof(size_t);
 
-        // True sized needed for the block (header + payload). Round up to a multiple of 16
-        const size_t memory_needed = align_up(size, 16) + sizeof(Block);
+        // Align it up to a multiple of 16 for easy math
+        const size_t memory_needed = align_up(raw_memory_needed, 16);
 
         // Find a good free block in the free list
         Block *free_block = find_suitable_block(memory_needed);
@@ -209,12 +243,16 @@ void *my_malloc(size_t size) {
         // If there is enough space left in the current block to be a block on its own after a split, we can split it
         free_block = split_block(free_block, memory_needed);
 
+        // The block is no longer free
         remove_block_from_free_list(free_block);
 
+        printf("malloc\n");
+        heap_dump();   // For testing only
         return free_block->payload();
     }
 
-    // heap_dump();   // For testing only
+    printf("malloc\n");
+    heap_dump();   // For testing only
     return nullptr;
 }
 
@@ -231,11 +269,17 @@ void *my_malloc(size_t size) {
 //
 void my_free(void *ptr) {
     if (ptr != nullptr) {
+        // Find the header of the current block
         Block *blk = Block::from_payload(ptr);
-        add_block_to_free_list(blk);
-    }
 
-    // heap_dump();   // For testing only
+        // use the header to add this block back to the heap
+        add_block_to_free_list(blk);
+
+        // if adjacent blocks to this block are also free, merge them together
+        coalesce(blk);
+    }
+    printf("free\n");
+    heap_dump();   // For testing only
 }
 
 // =============================================================================
@@ -252,32 +296,41 @@ void my_free(void *ptr) {
 //         c. Otherwise, my_malloc(new_size), memcpy the old data, my_free(ptr).
 //
 void *my_realloc(void *ptr, size_t new_size) {
-    // If they want a new memory allocation with new size but dont send a pointer, it is basically malloc
+    // If they want a new memory allocation with new size but don't send a pointer, it is basically malloc
     if (ptr == nullptr) {
         return my_malloc(new_size);
     }
 
-    // If they want a new size of 0, it is the same as freeing it
+    // If they want a new size of 0, it is the same as freeing the block
     if (new_size == 0) {
         my_free(ptr);
         return nullptr;
     }
 
+    // Find the header of the current block
     Block *blk = Block::from_payload(ptr);
 
-    // Case 1: If new size is equal to the current block already
+    // Case 1: If new size is equal to the current block already, return the pointer back
     if (blk->size == new_size) {
         return ptr;
     }
 
+    // Try to split the block and see if the new_size fits inside the current block
     Block* free_block = split_block(blk, new_size);
+
     void* p;
+
+    // if the new size does not fit in the current block, we need to malloc a new block and free the previous
     if (free_block == blk) {
         p = my_malloc(new_size);
+        my_free(ptr);
     }
     else {
+        // If it did fit, get the pointer from the split
         p = free_block->payload();
     }
+
+    // Copy the data from the previous pointer to the new one
     p = memcpy(p, ptr, new_size);
     return p;
 }
@@ -292,6 +345,7 @@ void *my_realloc(void *ptr, size_t new_size) {
 //    3. Zero the returned memory with memset.
 //
 void *my_calloc(size_t nmemb, size_t size) {
+    // If the number of memory bytes is 0 or the size is 0, we don't have to do anything
     if (nmemb == 0|| size == 0) {
         return nullptr;
     }
@@ -350,6 +404,7 @@ void heap_dump() {
 bool heap_check() {
     auto* current = static_cast<Block *>(heap_start);
 
+    // First check: Every block's size > 0 and is a multiple of ALIGNMENT.
     while (static_cast<void *>(current) < heap_end) {
         if (current->size <= 0 && current != free_list) {
             return false;
@@ -358,17 +413,25 @@ bool heap_check() {
             return false;
         }
 
-        current = reinterpret_cast<Block *>(reinterpret_cast<char *>(current) + current->size);
-    }
-
-    Block *p = free_list->next;
-
-    while (p != nullptr) {
-        if (p->is_free != true) {
+        // Second check: No two physically adjacent blocks are both free (coalescing invariant).
+        auto* ahead = reinterpret_cast<Block *>(reinterpret_cast<char *>(current) + current->size);
+        if (ahead != nullptr && current->is_free == true && ahead->is_free == true && ahead != heap_end) {
             return false;
         }
 
-        p = p->next;
+        current = reinterpret_cast<Block *>(reinterpret_cast<char *>(current) + current->size);
+    }
+
+
+
+    // Third check: Every block in your free list is actually marked free.
+    const Block *blk = free_list->next;
+    while (blk != nullptr) {
+        if (blk->is_free != true) {
+            return false;
+        }
+
+        blk = blk->next;
     }
 
     return true;

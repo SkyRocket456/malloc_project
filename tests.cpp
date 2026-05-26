@@ -97,19 +97,31 @@ TEST(no_overlap) {
     EXPECT(heap_check());
 }
 
-// T07: freeing adjacent blocks coalesces them into one
+// T07: freeing adjacent blocks coasize=3648    FREE
+//[  1] @0x55555557fe40  size=160     FREE
+//[  2] @0x55555557fee0  size=160     FREE
+//[  3] @0x55555557ff80  size=160     FREE
+//[  0] @0x55555557f000  size=3808    FREE
+//[  1] @0x55555557fee0  size=160     FREE
+//[  2] @0x55555557ff80  size=160     FREE
+//[  0] @0x55555557f000  size=3968    FREE
+//[  1] @0x55555557ff80  size=160     FREE
+//[  0] @0x55555557f000  size=4128    FREE
+//  PASS  no_overlap
+//[  0] @0x55555557f000  size=4032    FREE
+//[  1] @0x55555557ffc0  size=96      ALLOClesces them into one
 TEST(coalescing) {
     const size_t SZ = 64;
-    void* a = my_malloc(SZ);
-    void* b = my_malloc(SZ);
-    void* c = my_malloc(SZ);
+    void *a = my_malloc(SZ);
+    void *b = my_malloc(SZ);
+    void *c = my_malloc(SZ);
     EXPECT(a && b && c);
     my_free(b);
     my_free(a);
     my_free(c);
     EXPECT(heap_check());
     // The merged region must be re-usable as a single larger allocation
-    void* big = my_malloc(SZ * 2);
+    void *big = my_malloc(SZ * 2);
     EXPECT(big != nullptr);
     my_free(big);
     EXPECT(heap_check());
@@ -175,6 +187,10 @@ TEST(stress_random) {
     live.reserve(128);
     for (int i = 0; i < 2000; ++i) {
         if (action(rng) == 0 || live.empty()) {
+            printf("number: %d\n", i);
+            if (i == 6) {
+                int z = 1;
+            }
             void* p = my_malloc(sizes(rng));
             if (p) live.push_back(p);
         } else {

@@ -25,7 +25,7 @@ static constexpr size_t ALIGNMENT = 16;
 static constexpr size_t MIN_BLOCK_SIZE = 48;
 
 // When the heap needs to grow, request at least this many bytes from the OS.
-static constexpr size_t MIN_HEAP_CHUNK = 4096;
+static constexpr size_t MIN_HEAP_CHUNK = 4144;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Alignment helper
